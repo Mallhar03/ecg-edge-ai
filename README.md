@@ -1,14 +1,15 @@
-# ECG-FPGA Accelerator
+# ECG Arrhythmia Accelerator (Arduino Giga R1 Target)
 
-> **Real-time cardiac arrhythmia detection on FPGA using an INT8-quantized Multi-Scale 1D-CNN trained on the MIT-BIH Arrhythmia Database.**
+> **Real-time cardiac arrhythmia detection on Arduino Giga R1 (STM32H747XI MCU) using an INT8-quantized Multi-Scale 1D-CNN trained on the MIT-BIH Arrhythmia Database.**
 
-This repository contains the full end-to-end pipeline for a hardware-accelerated ECG arrhythmia classifier — from raw PhysioNet signal ingestion to INT8 quantized model training (with clinical sensitivity preservation) through to FPGA-ready `.mem` weight files for hardware deployment.
+This repository contains the full end-to-end pipeline for an embedded ECG arrhythmia classifier — from raw PhysioNet signal ingestion to INT8 quantized model training (with clinical sensitivity preservation) through to C++ `weights.h` header array exports for deployment on the Arduino Giga R1 MCU (with original FPGA `.mem` hardware artifacts archived for reference).
 
 ---
 
 ## Table of Contents
 
 - [Project Overview](#project-overview)
+- [Current Hardware Target](#current-hardware-target)
 - [Repository Structure](#repository-structure)
 - [Software Documentation](#software-documentation)
   - [Architecture](#architecture)
@@ -22,13 +23,15 @@ This repository contains the full end-to-end pipeline for a hardware-accelerated
   - [Running the Pipeline](#running-the-pipeline)
   - [Evaluation & Metrics](#evaluation--metrics)
 - [Hardware Documentation](#hardware-documentation)
-  - [FPGA Target & Toolchain](#fpga-target--toolchain)
-  - [RTL Architecture](#rtl-architecture)
-  - [Weight File Format](#weight-file-format)
-  - [Weights Manifest](#weights-manifest)
+  - [Current Hardware Target: Arduino Giga R1](#current-hardware-target-arduino-giga-r1)
+  - [Archived: Original FPGA Implementation](#archived-original-fpga-implementation)
+    - [FPGA Target & Toolchain](#fpga-target--toolchain)
+    - [RTL Architecture](#rtl-architecture)
+    - [Weight File Format](#weight-file-format)
+    - [Weights Manifest](#weights-manifest)
+    - [Constraints](#constraints)
+    - [Simulation & Testbenches](#simulation--testbenches)
   - [Hardware–Software Interface](#hardwaresoftware-interface)
-  - [Constraints](#constraints)
-  - [Simulation & Testbenches](#simulation--testbenches)
 - [Clinical Design Decisions](#clinical-design-decisions)
 - [Development Workflow & Branching](#development-workflow--branching)
 - [Contributors](#contributors)
@@ -37,7 +40,7 @@ This repository contains the full end-to-end pipeline for a hardware-accelerated
 
 ## Project Overview
 
-Cardiac arrhythmias are among the leading causes of sudden cardiac death. Real-time, low-power ECG analysis—traditionally performed on resource-limited embedded devices—is a hard problem. This project bridges the gap between a clinically validated deep-learning classifier and an FPGA hardware accelerator.
+Cardiac arrhythmias are among the leading causes of sudden cardiac death. Real-time, low-power ECG analysis—traditionally performed on resource-limited embedded devices—is a hard problem. This project bridges the gap between a clinically validated deep-learning classifier and an embedded hardware target.
 
 **Key highlights:**
 
@@ -48,8 +51,8 @@ Cardiac arrhythmias are among the leading causes of sudden cardiac death. Real-t
 | Model | Multi-Scale 1D-CNN with parallel branches (kernel sizes 3, 5, 7) |
 | Quantization | INT8 Sensitivity-Preserving QAT via Brevitas |
 | Max sensitivity drop allowed | **2.0%** per class (vs. FP32 baseline) |
-| Hardware target | FPGA (Vivado synthesis) |
-| Weight handoff format | `.mem` files (2-digit uppercase hex, two's complement) + `weights_manifest.json` |
+| Current Hardware Target | **Arduino Giga R1** (STM32H747XI MCU) *(Note: original FPGA path archived in `hardware_fpga_archive/`)* |
+| Weight handoff format | C++ `weights.h` header arrays (and `.mem` files for archived FPGA path) + `weights_manifest.json` |
 
 ---
 
@@ -136,7 +139,7 @@ Phase 2 (INT8 SP-QAT + Export)
   ├── QAT fine-tuning (20 epochs, lr=1e-4)
   ├── Validate: INT8 sensitivity drop ≤ 2% vs FP32 baseline per class
   ├── Save best_qat_model.pth
-  └── Export → .mem files + weights_manifest.json
+  └── Export → .mem files + weights_manifest.json + weights.h
 ```
 
 ---
@@ -161,7 +164,7 @@ Phase 2 (INT8 SP-QAT + Export)
 | `Bundle_Branch_Block` | `B`, `L`, `R`, `r` | BBB, LBBB, RBBB, R-on-T |
 | `Normal` | `N`, `.` | Normal sinus rhythm, paced beat |
 
-**Class index is IMMUTABLE** — the hardware RTL is built around index order `[0]=ST_segment [1]=QT_interval [2]=P_wave [3]=Bundle_Branch_Block [4]=Normal`.
+**Class index is IMMUTABLE** — the hardware inference interface is built around index order `[0]=ST_segment [1]=QT_interval [2]=P_wave [3]=Bundle_Branch_Block [4]=Normal`.
 
 **Windowing:**
 - Window size: **256 samples** (~711 ms at 360 Hz), centred on each annotated beat
@@ -287,16 +290,11 @@ FP32 baseline sensitivities are loaded from `software/outputs/plots/test_metrics
 
 ### Hardware Weight Export
 
-`src/quantization/export.py` → `export_weights_to_mem(model, output_dir)`
+`src/quantization/export.py` provides export routines for both active (Arduino Giga R1) and archived (FPGA) targets:
 
-For each `QuantConv1d` and `QuantLinear` layer:
-1. Extract integer weights via `layer.quant_weight()` → `round(value / scale)`
-2. Cast to `numpy.int8`
-3. Flatten in **row-major (C) order**
-4. Reinterpret as `uint8` for two's complement hex representation
-5. Write one value per line as **2-digit uppercase hex** (e.g., `FF`, `7F`, `80`)
-
-Also writes `weights_manifest.json` containing layer shape, value count, scale factor, and filename.
+1. **C++ Header Export (`export_weights_to_c_header`)**: Generates `weights.h` containing `#ifndef/#define/#endif` include guards and `const int8_t layer_*_weights[]` arrays alongside `shape` and `scale_factor` metadata.
+2. **FPGA `.mem` Export (`export_weights_to_mem`)**: Generates 2-digit uppercase hex `.mem` files for Verilog `$readmemh` hardware loading.
+3. **Manifest (`weights_manifest.json`)**: Contains layer shape, total value count, scale factor, and filenames.
 
 ---
 
@@ -345,7 +343,7 @@ inference:
   window_size: 256
 ```
 
-> **Warning:** The `class_names` list order in `config.yaml` is immutable. Do not reorder. The hardware RTL relies on index positions `[0..4]` matching `[ST_segment, QT_interval, P_wave, Bundle_Branch_Block, Normal]`.
+> **Warning:** The `class_names` list order in `config.yaml` is immutable. Do not reorder. Hardware inference relies on index positions `[0..4]` matching `[ST_segment, QT_interval, P_wave, Bundle_Branch_Block, Normal]`.
 
 ---
 
@@ -465,7 +463,7 @@ This pipeline:
 1. Loads FP32 weights, calibrates scale factors
 2. Runs 20 epochs of QAT fine-tuning
 3. Validates INT8 sensitivity (fails loudly if any class drops >2%)
-4. Exports `.mem` files and `weights_manifest.json`
+4. Exports `weights.h` (C++), `.mem` files (Verilog), and `weights_manifest.json`
 
 Output: `software/outputs/mem_files/`
 
@@ -504,14 +502,36 @@ Multi-label classification: a single ECG window can belong to multiple classes s
 
 ## Hardware Documentation
 
-### FPGA Target & Toolchain
+### Current Hardware Target: Arduino Giga R1
 
-- **Target FPGA:** Xilinx/AMD series (Vivado project files in `hardware/vivado/`)
+Active hardware development targets the **Arduino Giga R1 WiFi** powered by the **STM32H747XI** dual-core microcontroller (ARM Cortex-M7 @ 480 MHz main core + Cortex-M4 @ 240 MHz).
+
+#### Firmware Structure (`hardware_giga/`)
+- `firmware/ecg_giga_main.ino`: Top-level Arduino sketch initializing hardware subsystems and driving the main loop.
+- `firmware/adc_acquisition.h/.cpp`: 16-bit SAR ADC acquisition engine configured at an explicit **360 Hz sample rate** (`SAMPLE_RATE_HZ = 360`) matching the native sampling rate of the PhysioNet MIT-BIH dataset. Uses `Arduino_AdvancedAnalog` with 32-sample DMA buffers (`DMABuffer<Sample>`) and internal queue release (`current_buf.release()`).
+- `firmware/signal_diagnostics.h/.cpp`: Real-time diagnostic logging over Serial in CSV format (`timestamp,raw_value`) for external plotting and signal saturation/clipping analysis.
+- `firmware/inference.h/.cpp`: Documented C++ stub for INT8 Multi-Scale 1D-CNN inference (to be fully integrated post-ADC front-end signal quality validation).
+
+#### C++ Weight Export (`weights.h`)
+Weights from Brevitas INT8 QAT are exported into C++ arrays using `export_weights_to_c_header()` in `software/src/quantization/export.py`. The resulting `weights.h` header contains `#ifndef/#define/#endif` include guards and `const int8_t layer_*_weights[]` arrays alongside original shape and `scale_factor` metadata.
+
+#### Current Status
+The firmware is in the **ADC signal acquisition & quality diagnostics stage**, streaming raw 16-bit 360 Hz samples over USB Serial to diagnose and resolve front-end analog signal distortion before enabling online INT8 CNN classification.
+
+---
+
+### Archived: Original FPGA Implementation
+
+> **Archive Notice:** This section describes the original FPGA-based hardware path, now archived in [`hardware_fpga_archive/`](file:///home/mallhar/Downloads/rns-major-project/ecg-fpga-accelerator/hardware_fpga_archive/). Active development targets the Arduino Giga R1 — see the Giga R1 section above.
+
+#### FPGA Target & Toolchain
+
+- **Target FPGA:** Xilinx/AMD series (Vivado project files in `hardware_fpga_archive/vivado/`)
 - **Synthesis Tool:** Vivado Design Suite
 - **HDL:** Verilog / SystemVerilog
-- **Constraints:** XDC format (`hardware/constraints/`)
+- **Constraints:** XDC format (`hardware_fpga_archive/constraints/`)
 
-### RTL Architecture
+#### RTL Architecture
 
 The hardware accelerator implements the `QuantizedMultiScale1DCNN` inference graph in RTL, consuming INT8 weights pre-loaded from `.mem` files via `$readmemh`.
 
@@ -544,7 +564,7 @@ ADC / ECG Input (256×INT16 samples)
 
 All multiply-accumulate (MAC) operations use **INT8 arithmetic**. Scale factors from `weights_manifest.json` are used by RTL for dequantization at the output stage.
 
-### Weight File Format
+#### Weight File Format
 
 `.mem` files follow Verilog `$readmemh` convention:
 - **One weight value per line**
@@ -566,9 +586,9 @@ reg signed [7:0] branch0_weights [0:95]; // 32 × 1 × 3 = 96 values
 initial $readmemh("layer_branches_0_0_weights.mem", branch0_weights);
 ```
 
-### Weights Manifest
+#### Weights Manifest
 
-`weights_manifest.json` provides the hardware team with metadata for each layer:
+`weights_manifest.json` provides metadata for each layer:
 
 ```json
 {
@@ -605,45 +625,16 @@ initial $readmemh("layer_branches_0_0_weights.mem", branch0_weights);
 }
 ```
 
-**Field descriptions:**
+#### Constraints
 
-| Field | Type | Description |
-|---|---|---|
-| `shape` | `[int, ...]` | Original weight tensor shape (PyTorch layout) |
-| `num_values` | `int` | Total number of INT8 values in `.mem` file |
-| `scale_factor` | `float` | Dequantization scale: `real_value = int8_value × scale_factor` |
-| `mem_file` | `string` | Filename of corresponding `.mem` file |
-
-### Hardware–Software Interface
-
-The software and hardware teams share a strict interface contract:
-
-| Contract | Value |
-|---|---|
-| Input window size | 256 samples |
-| Input data type | INT8 (normalized from ECG ADC) |
-| Weight data type | INT8 (two's complement hex in `.mem`) |
-| Dequantization | `output = int8_value × scale_factor` |
-| Class output order | `[0]=ST [1]=QT [2]=P_wave [3]=BBB [4]=Normal` |
-| Inference threshold | 0.5 (applied post-dequantization) |
-
-The class output bit-vector maps directly to clinical diagnosis flags:
-- **Bit 0 (ST_segment):** ST-elevation / depression detected
-- **Bit 1 (QT_interval):** QT morphology abnormality detected
-- **Bit 2 (P_wave):** Atrial ectopic beat detected
-- **Bit 3 (Bundle_Branch_Block):** Bundle branch block detected
-- **Bit 4 (Normal):** Normal sinus rhythm
-
-### Constraints
-
-Timing and pin constraints for the FPGA implementation are in `hardware/constraints/`. These include:
+Timing and pin constraints for the archived FPGA implementation are in `hardware_fpga_archive/constraints/`. These include:
 - Clock period definitions
 - I/O pin assignments for ADC interface
 - Output logic for classification flag registers
 
-### Simulation & Testbenches
+#### Simulation & Testbenches
 
-Testbench files in `hardware/tb/` provide:
+Testbench files in `hardware_fpga_archive/tb/` provide:
 - Weight loading verification (checks `$readmemh` output against manifest)
 - Datapath functional simulation: stimulates with known ECG windows and checks output flags
 - Timing simulation post-synthesis
@@ -651,9 +642,31 @@ Testbench files in `hardware/tb/` provide:
 To run simulation with Vivado:
 ```tcl
 # In Vivado Tcl console:
-open_project hardware/vivado/<project>.xpr
+open_project hardware_fpga_archive/vivado/<project>.xpr
 launch_simulation
 ```
+
+---
+
+### Hardware–Software Interface
+
+The software pipeline and hardware targets share a strict interface contract:
+
+| Contract | Value | Application |
+|---|---|---|
+| Input window size | 256 samples (~711 ms @ 360 Hz) | Both Giga R1 & Archived FPGA |
+| Input data type | INT8 / 16-bit ADC | Both Giga R1 & Archived FPGA |
+| Weight data type | `const int8_t` arrays in `weights.h` (Arduino Giga R1) / `.mem` two's complement hex (Archived FPGA) | Target-dependent |
+| Dequantization | `output = int8_value × scale_factor` | Both Giga R1 & Archived FPGA |
+| Class output order | `[0]=ST [1]=QT [2]=P_wave [3]=BBB [4]=Normal` | Both Giga R1 & Archived FPGA |
+| Inference threshold | 0.5 (applied post-dequantization) | Both Giga R1 & Archived FPGA |
+
+The class output bit-vector / array maps directly to clinical diagnosis flags:
+- **Bit 0 (ST_segment):** ST-elevation / depression detected
+- **Bit 1 (QT_interval):** QT morphology abnormality detected
+- **Bit 2 (P_wave):** Atrial ectopic beat detected
+- **Bit 3 (Bundle_Branch_Block):** Bundle branch block detected
+- **Bit 4 (Normal):** Normal sinus rhythm
 
 ---
 
@@ -667,7 +680,7 @@ Several design decisions were made specifically to protect clinical correctness:
 
 3. **Sensitivity-preserving QAT** — The 2% hard cap on sensitivity drop per class ensures quantization does not compromise detection capability for rare but high-risk arrhythmias. The pipeline raises a `RuntimeError` and refuses to export hardware weights if this constraint is violated.
 
-4. **Immutable class ordering** — The 5-class index is frozen and documented across `config.yaml`, `metrics.py`, the `QuantizedMultiScale1DCNN` output layer, and RTL. Any reordering would silently break clinical interpretation of hardware outputs.
+4. **Immutable class ordering** — The 5-class index is frozen and documented across `config.yaml`, `metrics.py`, the `QuantizedMultiScale1DCNN` output layer, and any hardware inference implementation (RTL in the archived FPGA path, or C++ on the current Arduino Giga R1 target). Any reordering would silently break clinical interpretation of hardware outputs.
 
 5. **Per-window normalization fallback** — If training statistics are unavailable (e.g., during synthetic dry-runs), the dataset falls back to per-window z-score normalization. This is clearly logged as a warning.
 
@@ -694,10 +707,10 @@ The upstream repository is tracked at: https://github.com/Sudarshan-S-V/ecg-fpga
 
 | Name | GitHub | Contributions |
 |---|---|---|
-| Mallhar | [@Mallhar03](https://github.com/Mallhar03) | Project structure, `config.yaml`, data loader, QAT pipeline, hardware export |
+| Mallhar | [@Mallhar03](https://github.com/Mallhar03) | Project structure, `config.yaml`, data loader, QAT pipeline, hardware export, Giga R1 migration |
 | Abhishek | [@TheBeast2208](https://github.com/TheBeast2208) | ECG preprocessor, PyTorch dataset, full test suite (Phase 1A) |
 | Sudarshan | — | Repository upstream owner (Phase 1B: loss functions, additional tests) |
 
 ---
 
-*For questions about hardware integration, refer to `hardware/` directory and the [Weights Manifest](#weights-manifest) section. For software pipeline issues, open a GitHub issue.*
+*For questions about hardware integration, refer to `hardware_giga/` directory and the [Hardware Documentation](#hardware-documentation) section. For software pipeline issues, open a GitHub issue.*
