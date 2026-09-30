@@ -14,9 +14,11 @@ build/
 .ipynb_checkpoints/
 .env
 *.env
-conda-env/
-.vscode/
-.idea/
+.venv/
+ecg-fpga-venv/
+test_venv/
+*.log
+.claude-flow/
 # OS
 .DS_Store
 Thumbs.db

@@ -1,5 +1,5 @@
 project:
-  name: "ecg-fpga-accelerator"
+  name: "ecg-edge-accelerator"
   seed: 42
   output_dir: "software/outputs"
   log_dir: "software/outputs/logs"
@@ -11,6 +11,7 @@ data:
   sample_rate: 360
   window_size: 256
   lead_index: 0
+  in_channels: 1  # Set to 2 for dual-lead (MLII + V1)
 
   # Inter-patient split following Chazal et al. 2004 (AAMI standard).
   # Records are split at the PATIENT level — this prevents data leakage.
@@ -67,29 +68,46 @@ data:
 
   val_split_fraction: 0.15
 
-  # CLINICAL DECISION: annotation_map defines what counts as each cardiac condition.
-  # MIT-BIH annotation symbols -> project class.
-  # ST_segment: 'S'=ST-change, 'J'=junctional (J-point elevation)
-  # QT_interval: 'f'=fusion beat (QT morphology distorted), 'Q'/'q'=unclassifiable
-  # P_wave: atrial ectopics ('A'=atrial premature, 'a'=aberrant atrial,
-  #         'e'=atrial escape, 'j'=nodal escape)
-  # Bundle_Branch_Block: 'B'=BBB, 'L'=LBBB, 'R'=RBBB, 'r'=R-on-T
-  # Normal: 'N'=normal sinus, '.'=non-conducted paced beat
+  # AAMI EC57-standard annotation mapping (revised for scientific correctness).
+  # Every beat in the MIT-BIH database is mapped — NO silent Normal fallback.
+  #
+  # Previous mapping had 3 critical bugs:
+  #   1. "QT_interval" class was fictional (MIT-BIH doesn't annotate QT intervals)
+  #   2. V (PVC, 7130 beats) and / (paced, 7028 beats) were silently labeled Normal
+  #   3. ST_segment had only ~85 beats — statistically meaningless
+  #
+  # New mapping aligns with AAMI EC57 groups:
+  #   N (Normal): Normal sinus rhythm
+  #   S (Supraventricular): Atrial/junctional ectopy
+  #   V (Ventricular): PVCs and fusion beats — most dangerous arrhythmias
+  #   F (Bundle Branch Block): Conduction disease
+  #   Q (Paced/Other): Pacemaker rhythms + unclassifiable
   annotation_map:
-    ST_segment:          ["S", "J"]
-    QT_interval:         ["f", "Q", "q"]
-    P_wave:              ["A", "a", "e", "j"]
-    Bundle_Branch_Block: ["B", "L", "R", "r"]
+    Supraventricular:    ["A", "a", "J", "S", "e", "j"]
+    Ventricular:         ["V", "F"]
+    Bundle_Branch_Block: ["L", "R"]
+    Paced_Other:         ["!", "/", "f", "Q"]
     Normal:              ["N", "."]
 
-  # IMMUTABLE class order. Hardware RTL is built around this. Never change.
-  # [0]=ST_segment [1]=QT_interval [2]=P_wave [3]=Bundle_Branch_Block [4]=Normal
+  # REVISED class order. Index positions for hardware RTL.
+  # [0]=Supraventricular [1]=Ventricular [2]=Bundle_Branch_Block [3]=Paced_Other [4]=Normal
   class_names:
-    - "ST_segment"
-    - "QT_interval"
-    - "P_wave"
+    - "Supraventricular"
+    - "Ventricular"
     - "Bundle_Branch_Block"
+    - "Paced_Other"
     - "Normal"
+
+  # Data augmentation settings
+  augmentation:
+    enabled: true
+    time_shift_samples: 10        # Random shift ±10 samples
+    amplitude_scale_range: 0.1    # ±10% amplitude scaling
+    gaussian_noise_std: 0.01      # Additive Gaussian noise σ=0.01
+
+  # Annotation matching: search_radius in samples around each R-peak.
+  # Increased from 5→12 to match known XQRS jitter (20-30ms at 360 Hz = 7-11 samples).
+  search_radius: 12
 
 model:
   branch_out_channels: 32
@@ -98,10 +116,13 @@ model:
   fc_hidden_size: 128
   dropout_rate: 0.3
   num_classes: 5
+  # Use Squeeze-and-Excitation attention in each branch
+  use_se_attention: true
+  se_reduction: 4
   # Clinical severity weights: higher = rarer/more dangerous condition.
-  # ST(3.0)=ischemia, QT(3.5)=sudden death risk, P_wave(2.5)=pre-AF,
-  # BBB(2.0)=conduction disease, Normal(1.0)=baseline
-  class_weights: [3.0, 3.5, 2.5, 2.0, 1.0]
+  # Supraventricular(2.5)=pre-AF, Ventricular(3.5)=sudden death risk,
+  # BBB(2.0)=conduction disease, Paced_Other(1.5)=device rhythm, Normal(1.0)=baseline
+  class_weights: [2.5, 3.5, 2.0, 1.5, 1.0]
 
 training:
   epochs: 50
@@ -110,9 +131,15 @@ training:
   optimizer: "adam"
   weight_decay: 0.0001
   checkpoint_every_n_epochs: 5
-  early_stopping_patience: 10
+  early_stopping_patience: 15
   num_workers: 4
   pin_memory: true
+  # Loss function: "focal" or "bce"
+  loss_type: "focal"
+  focal_gamma: 2.0
+  # Learning rate scheduler: "cosine", "plateau", or "none"
+  lr_scheduler: "cosine"
+  lr_scheduler_min_lr: 0.00001
 
 qat:
   epochs: 20
@@ -130,3 +157,5 @@ inference:
   simulation_mode: true
   threshold: 0.5
   window_size: 256
+  # Per-class threshold optimization (computed on validation set)
+  optimize_thresholds: true

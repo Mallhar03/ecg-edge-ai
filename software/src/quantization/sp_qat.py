@@ -8,7 +8,7 @@ from src.training.loss import MorphologyWeightedBCELoss
 from src.training.metrics import compute_clinical_metrics
 from src.models.quantized_cnn import QuantizedMultiScale1DCNN
 
-logger = logging.getLogger("ecg_fpga.quantization.sp_qat")
+logger = logging.getLogger("ecg_edge.quantization.sp_qat")
 
 class SPQATPipeline:
     """

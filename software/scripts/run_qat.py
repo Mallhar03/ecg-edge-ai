@@ -31,7 +31,7 @@ def main():
     args = parser.parse_args()
 
     setup_logging()
-    logger = logging.getLogger("ecg_fpga.scripts.run_qat")
+    logger = logging.getLogger("ecg_edge.scripts.run_qat")
 
     try:
         # 1. Initialization

@@ -160,74 +160,136 @@ def normalize_window(
 
     return ((window - m) / (s + 1e-8)).astype(np.float32)
 
+
+def _build_symbol_to_class_map(
+    annotation_map: Dict[str, List[str]],
+    class_names: List[str]
+) -> Dict[str, int]:
+    """
+    Build a flat lookup table: annotation_symbol -> class_index.
+
+    This inverts the annotation_map (class_name -> [symbols]) into a
+    direct symbol -> class_index dictionary for O(1) lookup per beat.
+
+    Every symbol that appears in annotation_map gets exactly one class.
+    Symbols NOT in this map will be logged as unmapped and EXCLUDED
+    (not silently labeled as Normal).
+
+    Args:
+        annotation_map: Dict mapping class name -> list of annotation symbols.
+        class_names: Ordered list of class names defining index positions.
+
+    Returns:
+        Dict mapping each annotation symbol (str) to its class index (int).
+
+    Raises:
+        ValueError: If a symbol appears in multiple classes.
+    """
+    sym_to_class = {}
+    for class_idx, name in enumerate(class_names):
+        symbols = annotation_map.get(name, [])
+        for sym in symbols:
+            if sym in sym_to_class:
+                raise ValueError(
+                    f"Symbol '{sym}' is mapped to both class '{class_names[sym_to_class[sym]]}' "
+                    f"and class '{name}'. Each symbol must belong to exactly one class."
+                )
+            sym_to_class[sym] = class_idx
+    return sym_to_class
+
+
 def extract_labels(
     annotation: wfdb.Annotation,
     valid_peak_indices: np.ndarray,
     annotation_map: Dict[str, List[str]],
     class_names: List[str],
-    search_radius: int = 5
+    search_radius: int = 12
 ) -> np.ndarray:
     """
     Extract multi-hot class labels for each R-peak from WFDB annotations.
 
-    Searches for WFDB annotation symbols within a small radius of each R-peak
-    to account for jitter between XQRS detection and MIT-BIH annotation timing.
-    Applies annotation_map to produce multi-hot label vectors in the fixed
-    class order defined by class_names.
+    Uses np.searchsorted for O(log M) annotation lookup per R-peak (BUG 4 fix),
+    then finds the CLOSEST annotation within search_radius (not just the first hit).
 
-    Beats whose annotation symbol is not found in any class default to Normal
-    (index 4) — the clinically safe assumption for unknown beat types.
+    Beats whose annotation symbol is NOT found in ANY class are EXCLUDED
+    (labeled all-zeros). The caller must filter these out. This prevents the
+    critical BUG 2 where unmapped symbols (V, /, F) were silently labeled Normal.
 
     Args:
         annotation: wfdb.Annotation object from wfdb.rdann().
         valid_peak_indices: 1D array of R-peak sample indices, shape (M,).
         annotation_map: Dict mapping class name -> list of annotation symbols.
-                        e.g. {"ST_segment": ["S", "J"], "Normal": ["N", "."]}
-        class_names: Ordered list of 5 class names. Order is immutable:
-                     ["ST_segment", "QT_interval", "P_wave",
-                      "Bundle_Branch_Block", "Normal"]
+                        e.g. {"Ventricular": ["V", "F"], "Normal": ["N", "."]}
+        class_names: Ordered list of class names. Order defines label positions.
         search_radius: Samples to search around each R-peak for annotation match.
-                       Default 5 accounts for XQRS jitter at 360 Hz.
+                        Default 12 accounts for XQRS jitter at 360 Hz (~33ms).
 
     Returns:
-        np.ndarray of shape (M, 5), dtype float32. Multi-hot encoded labels.
+        np.ndarray of shape (M, num_classes), dtype float32. Multi-hot encoded labels.
         Row i corresponds to valid_peak_indices[i].
+        Rows with all zeros indicate unmapped beats.
 
     Raises:
-        ValueError: If valid_peak_indices is not 1D, or class_names/annotation_map
-                    do not have exactly 5 entries.
+        ValueError: If valid_peak_indices is not 1D.
     """
     if valid_peak_indices.ndim != 1:
         raise ValueError(f"valid_peak_indices must be 1D, got ndim={valid_peak_indices.ndim}")
-    if len(class_names) != 5:
-        raise ValueError(f"class_names must have exactly 5 entries, got {len(class_names)}")
-    if len(annotation_map) != 5:
-        raise ValueError(f"annotation_map must have exactly 5 classes, got {len(annotation_map)}")
 
-    labels = np.zeros((len(valid_peak_indices), len(class_names)), dtype=np.float32)
+    num_classes = len(class_names)
+    labels = np.zeros((len(valid_peak_indices), num_classes), dtype=np.float32)
+
+    # Build O(1) symbol -> class_index lookup
+    sym_to_class = _build_symbol_to_class_map(annotation_map, class_names)
+
+    # Sort annotation samples for binary search (should already be sorted, but be safe)
+    ann_samples = np.array(annotation.sample, dtype=np.int64)
+    ann_symbols = annotation.symbol
+
+    # Track unmapped symbols for logging
+    unmapped_counts = {}
+    mapped_count = 0
+    no_match_count = 0
 
     for i, p in enumerate(valid_peak_indices):
-        match_idx = -1
-        for j, s in enumerate(annotation.sample):
-            if abs(s - p) <= search_radius:
-                match_idx = j
-                break
-        
-        found_class = False
-        if match_idx != -1:
-            sym = annotation.symbol[match_idx]
-            for class_idx, name in enumerate(class_names):
-                if sym in annotation_map.get(name, []):
-                    labels[i, class_idx] = 1.0
-                    found_class = True
-        
-        if not found_class:
-            labels[i, 4] = 1.0
+        # O(log M) binary search: find the insertion point
+        insert_idx = np.searchsorted(ann_samples, p)
 
+        # Check candidates in the neighborhood around insert_idx
+        best_idx = -1
+        best_dist = search_radius + 1
+
+        for candidate_idx in range(max(0, insert_idx - 2), min(len(ann_samples), insert_idx + 3)):
+            dist = abs(int(ann_samples[candidate_idx]) - int(p))
+            if dist <= search_radius and dist < best_dist:
+                best_dist = dist
+                best_idx = candidate_idx
+
+        if best_idx != -1:
+            sym = ann_symbols[best_idx]
+            if sym in sym_to_class:
+                labels[i, sym_to_class[sym]] = 1.0
+                mapped_count += 1
+            else:
+                # NOT in any class — leave as all-zeros (will be filtered)
+                unmapped_counts[sym] = unmapped_counts.get(sym, 0) + 1
+        else:
+            no_match_count += 1
+
+    # Log comprehensive statistics
     label_counts = labels.sum(axis=0).astype(int)
-    logger.info(f"Extracted labels for {len(valid_peak_indices)} beats. Class distribution: {dict(zip(class_names, label_counts.tolist()))}")
-    
+    logger.info(
+        f"Extracted labels for {len(valid_peak_indices)} beats. "
+        f"Mapped: {mapped_count}, No annotation match: {no_match_count}. "
+        f"Class distribution: {dict(zip(class_names, label_counts.tolist()))}"
+    )
+    if unmapped_counts:
+        logger.warning(
+            f"Unmapped annotation symbols (excluded, NOT defaulted to Normal): {unmapped_counts}. "
+            f"Total excluded: {sum(unmapped_counts.values())} beats."
+        )
+
     return labels
+
 
 def compute_normalization_stats(windows: np.ndarray) -> Tuple[float, float]:
     """

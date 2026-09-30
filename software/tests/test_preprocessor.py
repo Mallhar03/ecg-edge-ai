@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 import wfdb
-from software.src.data.preprocessor import (
+from src.data.preprocessor import (
     detect_r_peaks,
     extract_windows,
     normalize_window,

@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import wfdb
 from pathlib import Path
-from software.src.data.loader import load_record, load_multiple_records
+from src.data.loader import load_record, load_multiple_records
 
 # Test 1: test_load_record_from_disk_signal_shape
 def test_load_record_from_disk_signal_shape(tmp_path):
@@ -95,7 +95,7 @@ def test_load_multiple_records_no_skip_raises_on_missing():
         load_multiple_records(["nonexistent_xyz"], "/nonexistent/path", skip_missing=False)
 
 # Dataset Tests appended for Phase 1A
-from software.src.data.dataset import ECGDataset
+from src.data.dataset import ECGDataset
 import torch
 
 # Test: test_ecg_dataset_getitem_shape

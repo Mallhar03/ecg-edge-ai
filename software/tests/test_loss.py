@@ -6,7 +6,7 @@ from src.training.loss import MorphologyWeightedBCELoss
 
 def test_loss_instantiation_valid():
     """Test that the loss function instantiates correctly with valid weights."""
-    config_path = 'software/config/config.yaml'
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../config/config.yaml'))
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
     class_weights = cfg['model']['class_weights']

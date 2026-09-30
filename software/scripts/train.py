@@ -1,3 +1,19 @@
+#!/usr/bin/env python3
+"""
+Train ECG-FPGA Accelerator Model.
+
+Usage:
+    python software/scripts/train.py --config software/config/config.yaml
+    python software/scripts/train.py --config software/config/config.yaml --resume software/outputs/checkpoints/best_model.pth
+
+This script:
+1. Loads data using inter-patient splitting (AAMI standard, no data leakage)
+2. Builds the enhanced MultiScale1DCNN model
+3. Configures focal loss + cosine LR scheduling
+4. Trains with early stopping and checkpointing
+5. Optimizes per-class thresholds on validation set
+"""
+
 import argparse
 import yaml
 import sys
@@ -10,7 +26,7 @@ sys.path.append(os.path.join(os.getcwd(), 'software'))
 
 from src.data.dataset import make_dataloaders
 from src.models.multiscale_cnn import MultiScale1DCNN
-from src.training.loss import MorphologyWeightedBCELoss
+from src.training.loss import build_loss_fn
 from src.training.trainer import Trainer
 
 def main():
@@ -24,7 +40,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s | %(name)s | %(levelname)s | %(message)s"
     )
-    logger = logging.getLogger("ecg_fpga.scripts.train")
+    logger = logging.getLogger("ecg_edge.scripts.train")
 
     try:
         with open(args.config, 'r') as f:
@@ -33,39 +49,23 @@ def main():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Using device: {device}")
 
-        # Data - Assuming make_dataloaders in dataset.py has been updated or matches
-        # Actually, let's check if we need to load windows first.
-        # But the requirement says "Call make_dataloaders(config) to get train/val/test loaders"
-        # I will assume there's a version that takes just config or I should have implemented one.
-        # Wait, if Abhishek's Phase 1A file has a different signature, I should probably 
-        # add a wrapper in dataset.py or handle it here.
-        # The prompt says "Confirm all Phase 1B artifacts are present and importable"
-        # and then "Call make_dataloaders(config)".
-        # I'll check if I should have modified dataset.py.
-        # Actually, I'll just implement the logic to load and call the existing make_dataloaders
-        # if I can't change it. But the user said "Execute immediately... Write all files now."
-        # I'll add a helper to dataset.py if needed, but I'll try to follow the CLI requirement.
-        
-        # NOTE: Real implementation of data loading if make_dataloaders(config) doesn't exist
-        # I'll check if I can add a simplified make_dataloaders to dataset.py.
-        
-        # For now, let's assume it works as requested.
+        # ── Data: Inter-patient split (BUG 1 FIX) ──
+        logger.info("Loading data with inter-patient splitting...")
         train_loader, val_loader, _ = make_dataloaders(config)
 
-        # Model
+        # ── Model: Enhanced architecture ──
         model = MultiScale1DCNN(config).to(device)
+        total_params = sum(p.numel() for p in model.parameters())
+        logger.info(f"Model has {total_params:,} parameters")
 
-        # Loss
-        loss_fn = MorphologyWeightedBCELoss(config['model']['class_weights'], device=device)
+        # ── Loss: Focal or BCE from config ──
+        loss_fn = build_loss_fn(config, device=device)
 
-        # Trainer
+        # ── Trainer ──
         trainer = Trainer(config)
 
         if args.resume:
             logger.info(f"Resuming from checkpoint: {args.resume}")
-            # If resuming, we might need a dummy optimizer to load into
-            # but Trainer.fit handles it. However, the requirement says:
-            # "call trainer.load_checkpoint(resume_path, model, optimizer)"
             optimizer = trainer._get_optimizer(model)
             trainer.load_checkpoint(args.resume, model, optimizer)
 
