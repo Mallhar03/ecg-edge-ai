@@ -123,57 +123,88 @@ def export_weights_to_c_header(quantized_model: torch.nn.Module,
         except OSError as e:
             raise OSError(f"Could not create output directory {output_dir}: {e}")
 
-    quant_layers = []
     quantized_model.cpu()
-
-    for name, module in quantized_model.named_modules():
-        if isinstance(module, (QuantConv1d, QuantLinear)):
-            qw = module.quant_weight()
-            int_weights_tensor = torch.round(qw.value / qw.scale).detach()
-            scale = qw.scale.item()
-
-            int_weights = int_weights_tensor.numpy().astype(np.int8)
-            flat_weights = int_weights.flatten(order='C')
-
-            c_array_name = f"layer_{name.replace('.', '_')}_weights"
-            quant_layers.append({
-                "name": name,
-                "c_array_name": c_array_name,
-                "shape": list(int_weights.shape),
-                "num_values": int(flat_weights.size),
-                "scale_factor": float(scale),
-                "weights": flat_weights
-            })
-
-    if not quant_layers:
-        raise ValueError("No quantized layers (QuantConv1d, QuantLinear) found in model.")
-
     header_path = os.path.join(output_dir, "weights.h")
+
     with open(header_path, 'w') as f:
         f.write("#ifndef WEIGHTS_H\n")
         f.write("#define WEIGHTS_H\n\n")
         f.write("#include <stdint.h>\n\n")
         f.write("/**\n")
         f.write(" * ============================================================================\n")
-        f.write(" * AUTOMATICALLY GENERATED INT8 WEIGHT ARRAYS FOR C++ / ARDUINO GIGA R1\n")
+        f.write(" * AUTOMATICALLY GENERATED MODEL ARRAYS FOR C++ / ARDUINO GIGA R1\n")
         f.write(" * Exported from Brevitas QuantizedMultiScale1DCNN model\n")
+        f.write(" * Contains INT8 weights, layer scales, biases, BatchNorm, and SE attention parameters.\n")
         f.write(" * ============================================================================\n")
         f.write(" */\n\n")
 
-        for layer in quant_layers:
-            f.write(f"// Layer       : {layer['name']}\n")
-            f.write(f"// Shape       : {layer['shape']}\n")
-            f.write(f"// Num Values  : {layer['num_values']}\n")
-            f.write(f"// Scale Factor: {layer['scale_factor']:.16e}\n")
-            f.write(f"const int8_t {layer['c_array_name']}[{layer['num_values']}] = {{\n    ")
-            
-            vals = layer['weights']
-            lines = []
-            for i in range(0, len(vals), 12):
-                chunk = ", ".join(f"{v:4d}" for v in vals[i:i+12])
-                lines.append(chunk)
-            f.write(",\n    ".join(lines))
-            f.write("\n};\n\n")
+        # 1. Export Quantized Conv and Linear layers
+        for name, module in quantized_model.named_modules():
+            clean_name = name.replace('.', '_')
+            if isinstance(module, (QuantConv1d, QuantLinear)):
+                qw = module.quant_weight()
+                int_weights_tensor = torch.round(qw.value / qw.scale).detach()
+                scale = qw.scale.item()
+
+                int_weights = int_weights_tensor.numpy().astype(np.int8)
+                flat_weights = int_weights.flatten(order='C')
+
+                f.write(f"// --- Layer: {name} ({'Conv1D' if isinstance(module, QuantConv1d) else 'Linear'}) ---\n")
+                f.write(f"// Shape: {list(int_weights.shape)}, Values: {flat_weights.size}\n")
+                f.write(f"static const float layer_{clean_name}_scale = {scale:.16e}f;\n")
+                f.write(f"static const int8_t layer_{clean_name}_weights[{flat_weights.size}] = {{\n    ")
+                
+                lines = []
+                for i in range(0, len(flat_weights), 12):
+                    chunk = ", ".join(f"{v:4d}" for v in flat_weights[i:i+12])
+                    lines.append(chunk)
+                f.write(",\n    ".join(lines))
+                f.write("\n};\n\n")
+
+                # Export bias if present
+                if module.bias is not None:
+                    bias_vals = module.bias.detach().numpy().flatten(order='C')
+                    f.write(f"static const float layer_{clean_name}_bias[{bias_vals.size}] = {{\n    ")
+                    b_lines = []
+                    for i in range(0, len(bias_vals), 8):
+                        chunk = ", ".join(f"{v:.8e}f" for v in bias_vals[i:i+8])
+                        b_lines.append(chunk)
+                    f.write(",\n    ".join(b_lines))
+                    f.write("\n};\n\n")
+
+            elif isinstance(module, nn.BatchNorm1d):
+                f.write(f"// --- BatchNorm Layer: {name} ---\n")
+                gamma = module.weight.detach().numpy().flatten()
+                beta = module.bias.detach().numpy().flatten()
+                mean = module.running_mean.detach().numpy().flatten()
+                var = module.running_var.detach().numpy().flatten()
+
+                f.write(f"static const float layer_{clean_name}_gamma[{gamma.size}] = {{\n    ")
+                f.write(", ".join(f"{v:.8e}f" for v in gamma))
+                f.write("\n};\n")
+
+                f.write(f"static const float layer_{clean_name}_beta[{beta.size}] = {{\n    ")
+                f.write(", ".join(f"{v:.8e}f" for v in beta))
+                f.write("\n};\n")
+
+                f.write(f"static const float layer_{clean_name}_mean[{mean.size}] = {{\n    ")
+                f.write(", ".join(f"{v:.8e}f" for v in mean))
+                f.write("\n};\n")
+
+                f.write(f"static const float layer_{clean_name}_var[{var.size}] = {{\n    ")
+                f.write(", ".join(f"{v:.8e}f" for v in var))
+                f.write("\n};\n\n")
+
+            elif isinstance(module, nn.Linear) and ('excite' in name or 'se' in name):
+                f.write(f"// --- SE Linear Layer: {name} ---\n")
+                se_w = module.weight.detach().numpy().flatten(order='C')
+                f.write(f"static const float layer_{clean_name}_weights[{se_w.size}] = {{\n    ")
+                se_lines = []
+                for i in range(0, len(se_w), 8):
+                    chunk = ", ".join(f"{v:.8e}f" for v in se_w[i:i+8])
+                    se_lines.append(chunk)
+                f.write(",\n    ".join(se_lines))
+                f.write("\n};\n\n")
 
         f.write("#endif // WEIGHTS_H\n")
 

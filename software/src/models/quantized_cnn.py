@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from brevitas.nn import QuantConv1d, QuantLinear
 from brevitas.quant import Int8WeightPerTensorFloat, Int8ActPerTensorFloat
+from src.models.multiscale_cnn import SqueezeExcite1D
 import logging
 
 logger = logging.getLogger("ecg_edge.models.quantized_cnn")
@@ -56,15 +57,8 @@ class QuantizedConvBranch(nn.Module):
         self.bn2 = nn.BatchNorm1d(out_channels)
         self.relu = nn.ReLU(inplace=True)
 
-        # SE attention (kept in FP32 — 6 params, not worth quantizing)
-        mid = max(1, out_channels // 4)
-        self.se_squeeze = nn.AdaptiveAvgPool1d(1)
-        self.se_excite = nn.Sequential(
-            nn.Linear(out_channels, mid, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(mid, out_channels, bias=False),
-            nn.Sigmoid(),
-        )
+        # SE attention (matching FP32 SqueezeExcite1D naming)
+        self.se = SqueezeExcite1D(out_channels, reduction=4)
 
         # Dual pooling
         self.max_pool = nn.AdaptiveMaxPool1d(pool_output_size)
@@ -74,11 +68,8 @@ class QuantizedConvBranch(nn.Module):
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.relu(self.bn2(self.conv2(x)))
 
-        # SE attention (FP32)
-        b, c, _ = x.shape
-        scale = self.se_squeeze(x).view(b, c)
-        scale = self.se_excite(scale).view(b, c, 1)
-        x = x * scale
+        # Channel attention (FP32)
+        x = self.se(x)
 
         max_out = self.max_pool(x)
         avg_out = self.avg_pool(x)
@@ -128,12 +119,16 @@ class QuantizedMultiScale1DCNN(nn.Module):
             for k in kernel_sizes
         ])
 
+        # Check if RR timing features are used
+        self.use_rr = config['model'].get('use_rr_features', False)
+
         # Each branch outputs (batch, C, 2*pool_size) due to dual pooling
         flat_size = branch_out_channels * len(kernel_sizes) * (2 * pool_output_size)
+        fc1_in = flat_size + (2 if self.use_rr else 0)
 
         # Quantized classifier head
         self.fc1 = QuantLinear(
-            flat_size, fc_hidden_size,
+            fc1_in, fc_hidden_size,
             weight_bit_width=weight_bits,
             weight_quant=Int8WeightPerTensorFloat,
             input_bit_width=act_bits,
@@ -153,9 +148,9 @@ class QuantizedMultiScale1DCNN(nn.Module):
         )
 
         total_params = sum(p.numel() for p in self.parameters())
-        logger.info(f"QuantizedMultiScale1DCNN initialized with {total_params} parameters.")
+        logger.info(f"QuantizedMultiScale1DCNN initialized with {total_params} parameters (RR features: {'ON' if self.use_rr else 'OFF'}).")
 
-    def forward(self, x):
+    def forward(self, x, rr=None):
         # x shape: [batch, in_channels, seq_len]
         branch_outs = [branch(x) for branch in self.branches]
 
@@ -164,6 +159,12 @@ class QuantizedMultiScale1DCNN(nn.Module):
 
         # Flatten
         x = torch.flatten(x, 1)
+
+        # Concatenate RR timing features if enabled
+        if self.use_rr:
+            if rr is None:
+                rr = torch.ones((x.shape[0], 2), dtype=x.dtype, device=x.device)
+            x = torch.cat([x, rr], dim=1)
 
         # Classifier head
         x = self.relu(self.fc1(x))

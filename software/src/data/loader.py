@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, List, Union
 import numpy as np
 import wfdb
 
@@ -10,38 +10,30 @@ logger = logging.getLogger(__name__)
 def load_record(
     record_id: str,
     data_dir: str,
-    lead_index: int = 0,
+    lead_index: Union[int, List[int]] = 0,
     physionet_db: Optional[str] = None
 ) -> Tuple[np.ndarray, wfdb.Annotation]:
     """
     Load a single MIT-BIH WFDB record and its beat annotations.
 
     Attempts disk load first. Falls back to PhysioNet streaming only if
-    physionet_db is provided and the file is not found locally. Streaming
-    requires an internet connection and a PhysioNet account for some databases.
+    physionet_db is provided and the file is not found locally.
 
     Args:
         record_id: MIT-BIH record identifier, e.g. "100", "201".
         data_dir: Directory containing .hea/.dat/.atr files.
-        lead_index: ECG lead channel index to extract.
-                    MIT-BIH channel 0 = MLII lead (recommended for classification).
+        lead_index: ECG lead channel index (e.g. 0 for MLII, or [0, 1] for dual-lead).
         physionet_db: PhysioNet database shortname for streaming fallback.
-                      e.g. "mitdb". Pass None to force local-only loading.
 
     Returns:
         Tuple of:
-            signal_array: np.ndarray of shape (N,), dtype float64. Raw ECG in mV.
+            signal_array: np.ndarray of shape (N,) or (N, C), dtype float64.
             annotation: wfdb.Annotation with .sample (indices) and .symbol (beat codes).
-
-    Raises:
-        ValueError: If record_id is empty, lead_index < 0, or signal has 0 samples.
-        FileNotFoundError: If record is not on disk and streaming is disabled or fails.
-        RuntimeError: If wfdb encounters any other loading error.
     """
     # Input validation
     if not record_id or not isinstance(record_id, str):
         raise ValueError("record_id must be a non-empty string")
-    if lead_index < 0:
+    if isinstance(lead_index, int) and lead_index < 0:
         raise ValueError(f"lead_index must be >= 0, got {lead_index}")
 
     record_path = Path(data_dir) / record_id
@@ -52,8 +44,8 @@ def load_record(
             record = wfdb.rdrecord(str(record_path))
             annotation = wfdb.rdann(str(record_path), 'atr')
         elif physionet_db is not None:
-            record = wfdb.rdrecord(record_id, pb_dir=physionet_db)
-            annotation = wfdb.rdann(record_id, 'atr', pb_dir=physionet_db)
+            record = wfdb.rdrecord(record_id, pn_dir=physionet_db)
+            annotation = wfdb.rdann(record_id, 'atr', pn_dir=physionet_db)
         else:
             logger.error(f"Record {record_id} not found in {data_dir} and no physionet_db provided.")
             raise FileNotFoundError(
@@ -61,15 +53,12 @@ def load_record(
                 f"or set physionet_db='{physionet_db or 'mitdb'}' for streaming."
             )
 
-        # Extract signal
-        signal_array = record.p_signal[:, lead_index].astype(np.float64)
+        # Extract signal (1D or multi-channel)
+        if isinstance(lead_index, (list, tuple)):
+            signal_array = record.p_signal[:, list(lead_index)].astype(np.float64)
+        else:
+            signal_array = record.p_signal[:, lead_index].astype(np.float64)
 
-        # Post-load validation
-        if signal_array.ndim != 1:
-            raise ValueError(
-                f"Extracted signal for record {record_id} is not 1D. "
-                f"Check lead_index={lead_index}."
-            )
         if len(signal_array) == 0:
             raise ValueError(f"Record {record_id} contains no signal samples.")
         if len(signal_array) < 1000:

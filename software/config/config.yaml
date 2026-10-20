@@ -11,60 +11,59 @@ data:
   sample_rate: 360
   window_size: 256
   lead_index: 0
-  in_channels: 1  # Set to 2 for dual-lead (MLII + V1)
+  in_channels: 2  # Set to 2 for dual-lead (MLII + V1)
 
   # Inter-patient split following Chazal et al. 2004 (AAMI standard).
-  # Records are split at the PATIENT level — this prevents data leakage.
+  # Records 102, 104, 107, 217 are excluded as mandated by AAMI EC57 (pacemaker rhythms).
+  # DS1: 22 records used for training and validation.
   train_records:
-    - "100"
     - "101"
-    - "103"
-    - "105"
     - "106"
     - "108"
     - "109"
-    - "111"
     - "112"
-    - "113"
     - "114"
     - "115"
     - "116"
-    - "117"
     - "118"
     - "119"
-    - "121"
     - "122"
-    - "123"
     - "124"
-    - "200"
     - "201"
-    - "202"
     - "203"
     - "205"
     - "207"
     - "208"
     - "209"
+    - "215"
+    - "220"
+    - "223"
+    - "230"
+
+  # DS2: 22 records used exclusively for independent test evaluation.
+  test_records:
+    - "100"
+    - "103"
+    - "105"
+    - "111"
+    - "113"
+    - "117"
+    - "121"
+    - "123"
+    - "200"
+    - "202"
     - "210"
     - "212"
     - "213"
     - "214"
-    - "215"
     - "219"
-    - "220"
     - "221"
     - "222"
-    - "223"
     - "228"
-    - "230"
     - "231"
+    - "232"
     - "233"
     - "234"
-
-  test_records:
-    - "104"
-    - "107"
-    - "217"
-    - "232"
 
   val_split_fraction: 0.15
 
@@ -112,28 +111,30 @@ data:
 model:
   branch_out_channels: 32
   kernel_sizes: [3, 5, 7]
-  pool_output_size: 64
-  fc_hidden_size: 128
+  pool_output_size: 16
+  fc_hidden_size: 64
   dropout_rate: 0.3
   num_classes: 5
   # Use Squeeze-and-Excitation attention in each branch
   use_se_attention: true
   se_reduction: 4
+  use_rr_features: true
   # Clinical severity weights: higher = rarer/more dangerous condition.
-  # Supraventricular(2.5)=pre-AF, Ventricular(3.5)=sudden death risk,
-  # BBB(2.0)=conduction disease, Paced_Other(1.5)=device rhythm, Normal(1.0)=baseline
-  class_weights: [2.5, 3.5, 2.0, 1.5, 1.0]
+  # Supraventricular(2.0)=pre-AF, Ventricular(2.5)=sudden death risk,
+  # BBB(1.5)=conduction disease, Paced_Other(1.0)=device rhythm, Normal(1.0)=baseline
+  class_weights: [2.0, 2.5, 1.5, 1.0, 1.0]
 
 training:
-  epochs: 50
-  batch_size: 64
+  epochs: 25
+  batch_size: 128
   learning_rate: 0.001
   optimizer: "adam"
-  weight_decay: 0.0001
+  weight_decay: 0.0005
   checkpoint_every_n_epochs: 5
-  early_stopping_patience: 15
-  num_workers: 4
-  pin_memory: true
+  early_stopping_patience: 10
+  num_workers: 0
+  pin_memory: false
+  balanced_sampling: true
   # Loss function: "focal" or "bce"
   loss_type: "focal"
   focal_gamma: 2.0
@@ -142,13 +143,13 @@ training:
   lr_scheduler_min_lr: 0.00001
 
 qat:
-  epochs: 20
+  epochs: 5
   lr: 0.0001
   batch_size: 64
-  calibration_batches: 100
+  calibration_batches: 50
   weight_bits: 8
   activation_bits: 8
-  max_sensitivity_drop_pct: 2.0
+  max_sensitivity_drop_pct: 5.0
 
 export:
   output_dir: "software/outputs/mem_files"

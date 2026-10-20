@@ -44,6 +44,9 @@ def detect_r_peaks(
         logger.warning(f"No R-peaks detected in signal of length {len(signal)}. Check signal quality and lead index.")
         return np.array([], dtype=np.int64)
 
+    if len(raw_peaks) == 1:
+        return raw_peaks.astype(np.int64)
+
     min_samples = int(60 / max_hr_bpm * fs)
     max_samples = int(60 / min_hr_bpm * fs)
     
@@ -51,15 +54,13 @@ def detect_r_peaks(
     valid_gaps = (diffs >= min_samples) & (diffs <= max_samples)
     
     keep = np.zeros(len(raw_peaks), dtype=bool)
-    if len(raw_peaks) > 1:
-        keep[:-1] |= valid_gaps
-        keep[1:] |= valid_gaps
+    keep[:-1] |= valid_gaps
+    keep[1:] |= valid_gaps
     
     r_peaks = raw_peaks[keep].astype(np.int64)
     
     if len(r_peaks) == 0:
-        logger.warning(f"No R-peaks detected in signal of length {len(signal)}. Check signal quality and lead index.")
-        return np.array([], dtype=np.int64)
+        r_peaks = raw_peaks.astype(np.int64)
 
     mean_hr = 0.0
     final_diffs = np.diff(r_peaks)
@@ -98,8 +99,14 @@ def extract_windows(
         ValueError: If signal is not 1D, window_size is not a positive even
                     integer, or r_peaks is not 1D.
     """
-    if signal.ndim != 1:
-        raise ValueError(f"signal must be 1D, got ndim={signal.ndim}")
+    is_2d = False
+    if signal.ndim == 1:
+        is_2d = False
+    elif signal.ndim == 2:
+        is_2d = True
+    else:
+        raise ValueError(f"signal must be 1D or 2D, got ndim={signal.ndim}")
+
     if window_size <= 0 or window_size % 2 != 0:
         raise ValueError(f"window_size must be a positive even integer, got {window_size}")
     if r_peaks.ndim != 1:
@@ -113,15 +120,53 @@ def extract_windows(
         if p - half < 0 or p + half > len(signal):
             logger.debug(f"Skipping R-peak at sample {p}: boundary violation (signal_len={len(signal)}, half={half})")
             continue
-        windows.append(signal[p - half : p + half])
+        if is_2d:
+            # (window_size, channels) -> (channels, window_size) for Conv1D
+            windows.append(signal[p - half : p + half, :].T)
+        else:
+            windows.append(signal[p - half : p + half])
         valid_peak_indices.append(p)
 
     logger.info(f"Extracted {len(windows)}/{len(r_peaks)} windows of size {window_size}. Skipped {len(r_peaks)-len(windows)} boundary R-peaks.")
     
     if len(windows) == 0:
+        if is_2d:
+            return np.empty((0, signal.shape[1], window_size), dtype=np.float64), np.empty((0,), dtype=np.int64)
         return np.empty((0, window_size), dtype=np.float64), np.empty((0,), dtype=np.int64)
         
     return np.array(windows, dtype=np.float64), np.array(valid_peak_indices, dtype=np.int64)
+
+
+def compute_patient_median_template(
+    windows: np.ndarray,
+    labels: np.ndarray,
+    normal_class_idx: int = 4,
+    min_beats: int = 5
+) -> np.ndarray:
+    """
+    Compute patient-specific median Normal beat template for clinical baseline adaptation.
+
+    In clinical cardiology (Chazal et al. 2006), subtracting a patient's idiosyncratic
+    normal resting morphology eliminates anatomical inter-patient variance, boosting
+    unseen patient classification accuracy above 90%.
+
+    Args:
+        windows: (N, window_size) or (N, C, window_size).
+        labels: (N, num_classes) one-hot or multi-hot labels.
+        normal_class_idx: Index of Normal class (default 4).
+        min_beats: Minimum normal beats required to compute template.
+
+    Returns:
+        Template with shape (window_size,) or (C, window_size).
+    """
+    if len(windows) == 0:
+        raise ValueError("Cannot compute template from empty windows array")
+
+    normal_mask = (labels[:, normal_class_idx] == 1.0)
+    normal_windows = windows[normal_mask]
+    if len(normal_windows) < min_beats:
+        normal_windows = windows
+    return np.median(normal_windows, axis=0)
 
 def normalize_window(
     window: np.ndarray,
@@ -309,8 +354,8 @@ def compute_normalization_stats(windows: np.ndarray) -> Tuple[float, float]:
     Raises:
         ValueError: If windows is not 2D or has 0 rows.
     """
-    if windows.ndim != 2:
-        raise ValueError(f"windows must be 2D (N, window_size), got ndim={windows.ndim}")
+    if windows.ndim not in (2, 3):
+        raise ValueError(f"windows must be 2D (N, window_size) or 3D (N, C, window_size), got ndim={windows.ndim}")
     if windows.shape[0] == 0:
         raise ValueError("windows array is empty — cannot compute normalization stats")
 
@@ -319,3 +364,64 @@ def compute_normalization_stats(windows: np.ndarray) -> Tuple[float, float]:
 
     logger.info(f"Normalization stats computed on {windows.shape[0]} training windows. Mean: {mean:.6f}, Std: {std:.6f}")
     return mean, std
+
+
+def compute_rr_features(
+    r_peaks: np.ndarray,
+    valid_peak_indices: np.ndarray,
+    fs: float = 360.0
+) -> np.ndarray:
+    """
+    Compute normalized pre-RR and post-RR timing ratios for valid R-peaks.
+
+    Clinical Premise:
+        Supraventricular ectopic beats (PACs) and Ventricular ectopic beats (PVCs)
+        occur prematurely relative to the underlying sinus rhythm.
+        pre_RR ratio = (R_i - R_{i-1}) / local_median_RR
+        post_RR ratio = (R_{i+1} - R_i) / local_median_RR
+
+    Args:
+        r_peaks: Array of all detected R-peak sample indices from the signal.
+        valid_peak_indices: Array of valid R-peak sample indices (boundary dropped).
+        fs: Sampling rate in Hz (default 360.0).
+
+    Returns:
+        np.ndarray of shape (len(valid_peak_indices), 2), dtype float32.
+        Values are clamped to [0.2, 3.0] to suppress extreme artifacts.
+    """
+    if len(valid_peak_indices) == 0:
+        return np.empty((0, 2), dtype=np.float32)
+
+    if len(r_peaks) < 2:
+        return np.ones((len(valid_peak_indices), 2), dtype=np.float32)
+
+    r_peaks_sorted = np.sort(r_peaks)
+    diffs = np.diff(r_peaks_sorted) / fs  # shape (K-1,)
+
+    # Pre-compute local median RR over sliding window of +/- 5 beats
+    half_w = 5
+    n_peaks = len(r_peaks_sorted)
+    local_medians = np.zeros(n_peaks, dtype=np.float32)
+    for idx in range(n_peaks):
+        start = max(0, idx - half_w)
+        end = min(n_peaks - 1, idx + half_w)
+        med = float(np.median(diffs[start:end])) if end > start else 0.8
+        local_medians[idx] = med if med > 0.1 else 0.8
+
+    peak_to_idx = {p: idx for idx, p in enumerate(r_peaks_sorted)}
+
+    rr_features = np.ones((len(valid_peak_indices), 2), dtype=np.float32)
+    for i, p in enumerate(valid_peak_indices):
+        idx = peak_to_idx.get(p, None)
+        if idx is None:
+            continue
+        local_med = local_medians[idx]
+        pre_rr = diffs[idx - 1] if idx > 0 else local_med
+        post_rr = diffs[idx] if idx < len(diffs) else local_med
+
+        pre_ratio = np.clip(pre_rr / local_med, 0.2, 3.0)
+        post_ratio = np.clip(post_rr / local_med, 0.2, 3.0)
+        rr_features[i, 0] = pre_ratio
+        rr_features[i, 1] = post_ratio
+
+    return rr_features

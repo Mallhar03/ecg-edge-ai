@@ -1,32 +1,194 @@
 {
-    "ST_segment": {
-        "sensitivity": 0.9993378457916421,
-        "specificity": 0.8351609480014149,
-        "f1": 0.9828153829456242
+    "default_threshold": {
+        "Supraventricular": {
+            "sensitivity": 0.9666339548577036,
+            "specificity": 0.31265035434862704,
+            "precision": 0.05848300430458661,
+            "f1": 0.11029308848640933,
+            "support": 2038,
+            "tp": 1970,
+            "tn": 14426,
+            "fp": 31715,
+            "fn": 68
+        },
+        "Ventricular": {
+            "sensitivity": 0.9605323542909592,
+            "specificity": 0.38856521739130434,
+            "precision": 0.06926106092193653,
+            "f1": 0.12920550651274768,
+            "support": 2179,
+            "tp": 2093,
+            "tn": 17874,
+            "fp": 28126,
+            "fn": 86
+        },
+        "Bundle_Branch_Block": {
+            "sensitivity": 0.2366856085634994,
+            "specificity": 0.8453166551758101,
+            "precision": 0.221850613154961,
+            "f1": 0.22902813299232735,
+            "support": 7567,
+            "tp": 1791,
+            "tn": 34330,
+            "fp": 6282,
+            "fn": 5776
+        },
+        "Paced_Other": {
+            "sensitivity": 0.2,
+            "specificity": 0.9886453273550048,
+            "precision": 0.0018248175182481751,
+            "f1": 0.0036166365280289334,
+            "support": 5,
+            "tp": 1,
+            "tn": 47627,
+            "fp": 547,
+            "fn": 4
+        },
+        "Normal": {
+            "sensitivity": 0.8285792800219841,
+            "specificity": 0.26753753499024513,
+            "precision": 0.7773738623765695,
+            "f1": 0.8021602351783125,
+            "support": 36390,
+            "tp": 30152,
+            "tn": 3154,
+            "fp": 8635,
+            "fn": 6238
+        },
+        "macro_avg": {
+            "sensitivity": 0.6384862395468294,
+            "specificity": 0.5605430178521983,
+            "f1": 0.25486071993956516
+        }
     },
-    "QT_interval": {
-        "sensitivity": 0.7540229885057471,
-        "specificity": 0.9950575575575575,
-        "f1": 0.7790973871733967
+    "confusion_matrix": [
+        [
+            1004,
+            89,
+            2,
+            1,
+            942
+        ],
+        [
+            196,
+            1569,
+            317,
+            15,
+            82
+        ],
+        [
+            706,
+            3088,
+            88,
+            0,
+            3685
+        ],
+        [
+            0,
+            3,
+            0,
+            0,
+            2
+        ],
+        [
+            7944,
+            10851,
+            311,
+            73,
+            17211
+        ]
+    ],
+    "evaluation_config": {
+        "checkpoint": "software/outputs/checkpoints/best_model.pth",
+        "default_threshold": 0.5,
+        "inter_patient_split": true,
+        "test_records": [
+            "100",
+            "103",
+            "105",
+            "111",
+            "113",
+            "117",
+            "121",
+            "123",
+            "200",
+            "202",
+            "210",
+            "212",
+            "213",
+            "214",
+            "219",
+            "221",
+            "222",
+            "228",
+            "231",
+            "232",
+            "233",
+            "234"
+        ],
+        "class_names": [
+            "Supraventricular",
+            "Ventricular",
+            "Bundle_Branch_Block",
+            "Paced_Other",
+            "Normal"
+        ]
     },
-    "P_wave": {
-        "sensitivity": 0.9136622390891841,
-        "specificity": 0.9981776765375854,
-        "f1": 0.9418092909535453
+    "optimized_thresholds": {
+        "Supraventricular": {
+            "sensitivity": 0.9440628066732091,
+            "specificity": 0.38358509785223555,
+            "precision": 0.06336033721925838,
+            "f1": 0.11875077150969016,
+            "support": 2038,
+            "threshold": 0.6166666666666666
+        },
+        "Ventricular": {
+            "sensitivity": 0.7273978889398807,
+            "specificity": 0.7331521739130434,
+            "precision": 0.11435786435786435,
+            "f1": 0.1976432445913087,
+            "support": 2179,
+            "threshold": 0.85
+        },
+        "Bundle_Branch_Block": {
+            "sensitivity": 0.4616096207215541,
+            "specificity": 0.5745838668373879,
+            "precision": 0.168175252768416,
+            "f1": 0.24653280163743518,
+            "support": 7567,
+            "threshold": 0.15
+        },
+        "Paced_Other": {
+            "sensitivity": 0.2,
+            "specificity": 0.9886453273550048,
+            "precision": 0.0018248175182481751,
+            "f1": 0.0036166365280289334,
+            "support": 5,
+            "threshold": 0.5
+        },
+        "Normal": {
+            "sensitivity": 0.9729321242099478,
+            "specificity": 0.11985749427432352,
+            "precision": 0.773355758939298,
+            "f1": 0.8617395431478259,
+            "support": 36390,
+            "threshold": 0.19242424242424241
+        },
+        "macro_avg": {
+            "sensitivity": 0.6612004881089184,
+            "specificity": 0.559964792046399,
+            "f1": 0.28565659948285776
+        }
     },
-    "Bundle_Branch_Block": {
-        "sensitivity": 0.704,
-        "specificity": 0.9995090217257886,
-        "f1": 0.7963800904977375
-    },
-    "Normal": {
-        "sensitivity": 0.9859851607584501,
-        "specificity": 0.9999342364855978,
-        "f1": 0.9925311203319501
-    },
-    "macro_avg": {
-        "sensitivity": 0.8714016468290048,
-        "specificity": 0.9655678880615888,
-        "f1": 0.8985266543804507
+    "clinical_persistence": {
+        "sensitivity": 0.9986232216613126,
+        "specificity": 0.028608695652173912,
+        "precision": 0.046436192915066156,
+        "f1": 0.08874569220416403,
+        "tp": 2176,
+        "tn": 1316,
+        "fp": 44684,
+        "fn": 3
     }
 }

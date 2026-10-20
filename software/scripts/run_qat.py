@@ -60,6 +60,12 @@ def main():
         header_path = export_weights_to_c_header(quant_model, export_dir)
         logger.info(f".mem files, weights_manifest.json, and {os.path.basename(header_path)} written to {export_dir}")
         
+        # Also copy / export directly to firmware/firmware for Arduino deployment
+        firmware_dir = "firmware/firmware"
+        if os.path.exists(firmware_dir):
+            export_weights_to_c_header(quant_model, firmware_dir)
+            logger.info(f"Generated firmware weights header in: {firmware_dir}/weights.h")
+        
         logger.info("Phase 2 QAT Pipeline completed successfully.")
         
     except Exception as e:

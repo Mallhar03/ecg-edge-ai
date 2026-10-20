@@ -24,6 +24,7 @@ import torch
 import numpy as np
 import json
 from tqdm import tqdm
+from sklearn.metrics import confusion_matrix
 
 # Ensure software directory is in path for imports
 _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -33,7 +34,7 @@ if _software_dir not in sys.path:
 
 from src.data.dataset import make_dataloaders
 from src.models.multiscale_cnn import MultiScale1DCNN
-from src.training.metrics import compute_clinical_metrics, CLASS_NAMES
+from src.training.metrics import compute_clinical_metrics, CLASS_NAMES, apply_temporal_persistence_filter
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate ECG-FPGA Accelerator Model")
@@ -95,10 +96,19 @@ def main():
         all_probs = []
 
         with torch.no_grad():
-            for signals, labels in tqdm(test_loader, desc="Evaluating"):
-                signals = signals.to(device)
-                labels = labels.to(device)
-                logits = model(signals)
+            for batch in tqdm(test_loader, desc="Evaluating"):
+                if len(batch) == 3:
+                    signals, rr, labels = batch
+                    signals = signals.to(device)
+                    rr = rr.to(device)
+                    labels = labels.to(device)
+                    logits = model(signals, rr)
+                else:
+                    signals, labels = batch
+                    signals = signals.to(device)
+                    labels = labels.to(device)
+                    logits = model(signals)
+
                 probs_batch = torch.sigmoid(logits)
                 all_logits.append(logits.cpu().numpy())
                 all_labels.append(labels.cpu().numpy())
@@ -183,12 +193,57 @@ def main():
             print("-" * 75)
             print(f"{'Macro Average':<25} {'---':<10} {m_avg_opt['sensitivity']:<12.4f} {m_avg_opt['specificity']:<12.4f} {m_avg_opt['f1']:<12.4f}\n")
 
+        # ── Clinical Temporal Persistence Evaluation (ICU Protocol) ──
+        y_pred_persist = apply_temporal_persistence_filter(probs, v_class_idx=1, high_conf_thresh=0.85, tentative_thresh=0.15)
+        tp_v = int(np.sum((all_labels[:, 1] == 1) & (y_pred_persist[:, 1] == 1)))
+        tn_v = int(np.sum((all_labels[:, 1] == 0) & (y_pred_persist[:, 1] == 0)))
+        fp_v = int(np.sum((all_labels[:, 1] == 0) & (y_pred_persist[:, 1] == 1)))
+        fn_v = int(np.sum((all_labels[:, 1] == 1) & (y_pred_persist[:, 1] == 0)))
+        sens_v = tp_v / (tp_v + fn_v) if (tp_v + fn_v) > 0 else 0.0
+        spec_v = tn_v / (tn_v + fp_v) if (tn_v + fp_v) > 0 else 0.0
+        prec_v = tp_v / (tp_v + fp_v) if (tp_v + fp_v) > 0 else 0.0
+        f1_v = 2 * prec_v * sens_v / (prec_v + sens_v) if (prec_v + sens_v) > 0 else 0.0
+
+        metrics_persist = {
+            'sensitivity': float(sens_v),
+            'specificity': float(spec_v),
+            'precision': float(prec_v),
+            'f1': float(f1_v),
+            'tp': tp_v, 'tn': tn_v, 'fp': fp_v, 'fn': fn_v
+        }
+
+        print("=" * 75)
+        print("  CLINICAL ICU TEMPORAL PERSISTENCE FILTER (Ventricular PVC Alarms)")
+        print("=" * 75)
+        print(f"Ventricular Sensitivity (Recall): {sens_v*100:.2f}% ({tp_v:,}/{tp_v+fn_v:,} PVCs caught)")
+        print(f"Ventricular Specificity (Alarms): {spec_v*100:.2f}% ({tn_v:,}/{tn_v+fp_v:,} non-PVCs rejected)")
+        print(f"False Positives (Alarms):         {fp_v:,}")
+        print("=" * 75 + "\n")
+
+        # ── Multi-Class Confusion Matrix (Argmax) ──
+        y_true_cls = np.argmax(all_labels, axis=1)
+        y_pred_cls = np.argmax(probs, axis=1)
+        cm = confusion_matrix(y_true_cls, y_pred_cls, labels=list(range(len(class_names))))
+
+        print("=" * 75)
+        print("  MULTI-CLASS CONFUSION MATRIX (Argmax Softmax)")
+        print("=" * 75)
+        label_title = "True \\ Pred"
+        header = f"{label_title:<22}" + "".join([f"{name[:8]:>10}" for name in class_names])
+        print(header)
+        print("-" * 75)
+        for i, name in enumerate(class_names):
+            row_str = f"{name:<22}" + "".join([f"{cm[i, j]:>10d}" for j in range(len(class_names))])
+            print(row_str)
+        print("=" * 75 + "\n")
+
         # ── Save to JSON ──
         output_dir = os.path.join(os.getcwd(), "software/outputs/plots")
         os.makedirs(output_dir, exist_ok=True)
 
         results = {
             'default_threshold': metrics_default,
+            'confusion_matrix': cm.tolist(),
             'evaluation_config': {
                 'checkpoint': args.checkpoint,
                 'default_threshold': default_threshold,
@@ -199,6 +254,7 @@ def main():
         }
         if metrics_optimized:
             results['optimized_thresholds'] = metrics_optimized
+        results['clinical_persistence'] = metrics_persist
 
         output_path = os.path.join(output_dir, "test_metrics.json")
         with open(output_path, 'w') as f:

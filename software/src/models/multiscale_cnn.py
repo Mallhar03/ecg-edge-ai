@@ -131,6 +131,9 @@ class MultiScale1DCNN(nn.Module):
         use_se = config['model'].get('use_se_attention', True)
         se_reduction = config['model'].get('se_reduction', 4)
 
+        # Check if RR timing features are used
+        self.use_rr = config['model'].get('use_rr_features', False)
+
         # Parallel branches with enhanced architecture
         self.branches = nn.ModuleList([
             ConvBranch(
@@ -146,9 +149,10 @@ class MultiScale1DCNN(nn.Module):
 
         # Each branch outputs (batch, C, 2*pool_size) due to dual pooling
         flat_size = branch_out_channels * len(kernel_sizes) * (2 * pool_output_size)
+        fc1_in = flat_size + (2 if self.use_rr else 0)
 
         # Classifier head
-        self.fc1 = nn.Linear(flat_size, fc_hidden_size)
+        self.fc1 = nn.Linear(fc1_in, fc_hidden_size)
         self.relu = nn.ReLU(inplace=True)
         self.dropout = nn.Dropout(dropout_rate)
         self.fc2 = nn.Linear(fc_hidden_size, num_classes)
@@ -159,10 +163,11 @@ class MultiScale1DCNN(nn.Module):
             f"MultiScale1DCNN initialized: {total_params} total params "
             f"({trainable_params} trainable). "
             f"SE attention: {'ON' if use_se else 'OFF'}, "
+            f"RR features: {'ON' if self.use_rr else 'OFF'}, "
             f"Branches: {kernel_sizes}, Dual pooling: ON"
         )
 
-    def forward(self, x):
+    def forward(self, x, rr=None):
         # x shape: [batch, in_channels, seq_len]
         branch_outs = [branch(x) for branch in self.branches]
 
@@ -171,6 +176,12 @@ class MultiScale1DCNN(nn.Module):
 
         # Flatten
         x = torch.flatten(x, 1)
+
+        # Concatenate RR timing features if enabled
+        if self.use_rr:
+            if rr is None:
+                rr = torch.ones((x.shape[0], 2), dtype=x.dtype, device=x.device)
+            x = torch.cat([x, rr], dim=1)
 
         # Classifier head
         x = self.relu(self.fc1(x))

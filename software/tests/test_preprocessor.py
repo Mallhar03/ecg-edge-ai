@@ -99,3 +99,16 @@ def test_compute_normalization_stats_empty_raises():
     windows = np.zeros((0, 256))
     with pytest.raises(ValueError):
         compute_normalization_stats(windows)
+
+# Test 12: test_compute_rr_features_prematurity
+def test_compute_rr_features_prematurity():
+    from src.data.preprocessor import compute_rr_features
+    # Regular beats spaced 360 samples apart, but beat 2 occurs prematurely at 540 instead of 720
+    r_peaks = np.array([360, 540, 1080, 1440, 1800], dtype=np.int64)
+    valid_peaks = np.array([540, 1080], dtype=np.int64)
+    rr = compute_rr_features(r_peaks, valid_peaks, fs=360)
+    assert rr.shape == (2, 2)
+    # Beat at 540 has pre_rr = (540-360)=180 samples (0.5s), which is premature (ratio < 1.0)
+    assert rr[0, 0] < 1.0
+    # Beat at 1080 has post_rr = (1080-540)=540 samples, compensatory pause (ratio > 1.0)
+    assert rr[0, 1] > 1.0

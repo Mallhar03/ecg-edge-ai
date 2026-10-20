@@ -40,7 +40,7 @@ def test_metrics_output_structure():
     assert set(metrics.keys()) == expected_keys
     
     for key in metrics:
-        assert set(metrics[key].keys()) == {'sensitivity', 'specificity', 'f1'}
+        assert {'sensitivity', 'specificity', 'f1'}.issubset(set(metrics[key].keys()))
 
 def test_metrics_invalid_shape_raises():
     """Test that mismatched or incorrect input shapes raise ValueError."""

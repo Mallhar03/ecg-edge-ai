@@ -47,7 +47,9 @@ def main():
             config = yaml.safe_load(f)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using device: {device}")
+        if device.type == "cpu":
+            torch.set_num_threads(8)
+        logger.info(f"Using device: {device} (threads={torch.get_num_threads()})")
 
         # ── Data: Inter-patient split (BUG 1 FIX) ──
         logger.info("Loading data with inter-patient splitting...")
