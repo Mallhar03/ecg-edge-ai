@@ -21,8 +21,10 @@ All MIT-BIH Arrhythmia Database annotation symbols are explicitly mapped to 5 st
 ## 2. Preventing Common Pitfalls & Data Leakage
 
 ### Inter-Patient vs. Intra-Patient Splitting
-- **The Problem**: Intra-patient splitting randomly shuffles all beats across the training and test sets. Because a patient's individual ECG morphology is consistent, intra-patient models merely memorize patient signatures, resulting in falsely inflated F1 scores (98–99%) that catastrophically fail on unseen patients.
-- **The Solution**: We strictly enforce **inter-patient splitting** based on *Chazal et al. (2004)*. Entire patient records are allocated exclusively to either the training set (44 records) or the test set (4 independent patient records: `104`, `107`, `217`, `232`).
+- **The Solution**: We strictly enforce **inter-patient splitting** based on the canonical *Chazal et al. (2004)* benchmark:
+  - **Excluded Records**: Records `102`, `104`, `107`, and `217` are explicitly excluded as mandated by AAMI EC57 because they contain paced beats.
+  - **DS1 (Training & Validation Set - 22 records)**: `101`, `106`, `108`, `109`, `112`, `114`, `115`, `116`, `118`, `119`, `122`, `124`, `201`, `203`, `205`, `207`, `208`, `209`, `215`, `220`, `223`, `230`.
+  - **DS2 (Independent Test Set - 22 records)**: `100`, `103`, `105`, `111`, `113`, `117`, `121`, `123`, `200`, `202`, `210`, `212`, `213`, `214`, `219`, `221`, `222`, `228`, `231`, `232`, `233`, `234`.
 
 ### Eliminating Silent Fallbacks
 - Prior implementations erroneously fell back to labeling unmapped beats as `Normal`. This caused over **14,900 dangerous beats** (7,130 PVCs and 7,028 paced beats) to contaminate the Normal training distribution.

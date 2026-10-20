@@ -15,18 +15,19 @@ This repository provides an end-to-end framework for detecting cardiac arrhythmi
 
 ```mermaid
 flowchart LR
-    A[Raw ECG Signal<br>MIT-BIH @ 360 Hz] --> B[XQRS Preprocessor<br>256-sample window]
-    B --> C[Multi-Scale 1D-CNN<br>k=3, 5, 7 + SE Attention]
-    C --> D[INT8 Brevitas QAT<br><= 2.0% sensitivity drop]
+    A[Dual-Lead ECG<br>MLII + V1 @ 360 Hz] --> B[Preprocessor & RR Extractor<br>256-sample window + RR ratios]
+    B --> C[Multi-Scale 1D-CNN<br>k=3, 5, 7 + SE + RR Fusion]
+    C --> D[INT8 Brevitas QAT<br>Sensitivity-Preserving]
     D --> E[C++ weights.h Export<br>Arduino Giga R1 / STM32H7]
-    E --> F[Real-Time Inference<br>ARM Cortex-M7 Core]
+    E --> F[Real-Time Embedded Inference<br>ARM Cortex-M7 Core]
 ```
 
 ### Key Highlights
 - **Clinical Standard Compliance**: Strict AAMI EC57 5-class categorization (`Normal`, `Supraventricular`, `Ventricular`, `Bundle_Branch_Block`, `Paced_Other`).
-- **Inter-Patient Splitting**: Zero patient overlap between train and test splits (*Chazal et al.*) to prevent synthetic accuracy inflation.
-- **Ultra-Lightweight**: Under 50 KB model weight storage in INT8 format, easily fitting inside MCU internal SRAM with no external DRAM required.
-- **Multi-Scale Feature Extraction**: Parallel Conv1D branches ($k=3, 5, 7$) with SE channel attention and dual peak/morphology pooling.
+- **Inter-Patient Splitting**: Canonical *Chazal et al. (2004)* division into DS1 (22 training/validation records) and DS2 (22 test records), strictly excluding paced records (102, 104, 107, 217). Zero patient overlap prevents synthetic accuracy inflation.
+- **Dual-Lead & Timing Fusion**: Simultaneous 2-lead morphology (MLII + V1) fused with local median-normalized pre-RR and post-RR timing ratios to reliably detect premature ectopic beats (PVCs, PACs).
+- **Ultra-Lightweight Embedded Footprint**: Under 50 KB model weights in INT8 format, executing in real time (< 10 ms) on the Arduino Giga R1 Cortex-M7 with zero external DRAM dependencies.
+- **Bit-Exact Golden Vector Verification**: Automated C++ test harness testing firmware inference against PyTorch / Brevitas golden vectors.
 
 ---
 
@@ -39,9 +40,9 @@ flowchart LR
 │   ├── software/               # Training and quantization pipelines
 │   ├── hardware/               # Embedded deployment (Arduino Giga R1 / STM32H7)
 │   └── resources/              # External references and bibliography
-├── firmware/                   # Active MCU deployment (Arduino Giga R1 / STM32H7 firmware)
-│   ├── firmware/               # Main .ino sketches, ADC sampler, and inference engine
-│   └── tests/                  # Golden vector validation routines
+├── firmware/                   # Active MCU deployment (Arduino Giga R1 / STM32H7)
+│   ├── firmware/               # firmware.ino, ADC sampler, and INT8 inference engine
+│   └── tests/                  # Golden vector host C++ verification harness
 └── software/                   # Core Python ML pipeline
     ├── config/                 # YAML configuration (hyperparameters, splits, mappings)
     ├── data/                   # Raw and processed MIT-BIH dataset directory
@@ -106,12 +107,22 @@ python3 software/scripts/run_qat.py \
   --baseline software/outputs/checkpoints/best_model.pth
 ```
 
-### 6. Run Unit Tests
+### 6. Run Automated Tests & Golden Vector Verification
 
-Execute the automated test suite:
+Execute the Python test suite:
 
 ```bash
-pytest software/tests -q
+PYTHONPATH=software pytest software/tests -v
+```
+
+Build and run the C++ golden vector verification test harness:
+
+```bash
+g++ -O3 -I firmware/firmware -I firmware/tests \
+  firmware/tests/test_inference_golden.cpp firmware/firmware/inference.cpp \
+  -o firmware/tests/test_golden_runner
+
+./firmware/tests/test_golden_runner
 ```
 
 ---

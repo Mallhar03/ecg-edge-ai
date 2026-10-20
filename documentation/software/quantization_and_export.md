@@ -29,22 +29,32 @@ flowchart LR
 Running the export script converts PyTorch weights and scale factors into deployment-ready artifacts:
 
 ```bash
-python ecg-edge-accelerator/software/scripts/run_qat.py \
-  --config ecg-edge-accelerator/software/config/config.yaml \
-  --baseline ecg-edge-accelerator/software/outputs/checkpoints/best_model.pth
+python software/scripts/run_qat.py \
+  --config software/config/config.yaml \
+  --baseline software/outputs/checkpoints/best_model.pth
 ```
 
 ### 1. C++ Header (`weights.h`) for Microcontrollers
-Exports flattened, `const int8_t` arrays along with per-layer quantization scale factors for ARM Cortex-M inference:
+Exports flattened `static const int8_t` weight arrays, layer floating-point scales, bias arrays, BatchNorm statistics ($\gamma, \beta, \mu, \sigma^2$), and Squeeze-and-Excitation FC weights for direct inclusion in the firmware:
 ```cpp
 // Auto-generated weights.h
-#pragma once
+#ifndef WEIGHTS_H
+#define WEIGHTS_H
 #include <stdint.h>
 
-const int8_t conv1_weights[32 * 1 * 3] = { ... };
-const float conv1_scale = 0.015625f;
+static const float layer_branches_0_conv1_scale = 3.1894e-03f;
+static const int8_t layer_branches_0_conv1_weights[192] = { ... };
+static const float layer_branches_0_bn1_gamma[32] = { ... };
 ...
+#endif
 ```
 
-### 2. Metadata Manifest (`weights_manifest.json`)
-Stores layer shapes, bitwidths, zero-points, and quantization scale factors for validation.
+### 2. Golden Vector Export (`golden_vectors.h`)
+To ensure mathematical bit-exactness between PyTorch INT8 simulation and MCU C++ execution:
+```bash
+python software/scripts/export_golden_vectors.py \
+  --config software/config/config.yaml \
+  --checkpoint software/outputs/checkpoints/best_model.pth \
+  --output firmware/tests/golden_vectors/golden_vectors.h
+```
+This enables the host C++ harness (`firmware/tests/test_inference_golden.cpp`) to verify MCU inference without physical hardware connected.

@@ -7,25 +7,29 @@ The classifier uses a specialized **Multi-Scale 1D-Convolutional Neural Network 
 ## 1. Network Topology
 
 ```
-Input: (Batch, Channels=1, Length=256)
+Input: (Batch, Channels=2, Length=256) [Lead II + Lead V1]
   │
-  ├──► Branch 1 (k=3): Conv1D(1->32) -> BN -> ReLU -> Conv1D(32->32) -> BN -> ReLU -> SE -> DualPool(64) ──► (Batch, 32, 128)
+  ├──► Branch 1 (k=3): Conv1D(2->32) -> BN -> ReLU -> Conv1D(32->32) -> BN -> ReLU -> SE -> DualPool(16) ──► (Batch, 32, 32)
   │
-  ├──► Branch 2 (k=5): Conv1D(1->32) -> BN -> ReLU -> Conv1D(32->32) -> BN -> ReLU -> SE -> DualPool(64) ──► (Batch, 32, 128)
+  ├──► Branch 2 (k=5): Conv1D(2->32) -> BN -> ReLU -> Conv1D(32->32) -> BN -> ReLU -> SE -> DualPool(16) ──► (Batch, 32, 32)
   │
-  └──► Branch 3 (k=7): Conv1D(1->32) -> BN -> ReLU -> Conv1D(32->32) -> BN -> ReLU -> SE -> DualPool(64) ──► (Batch, 32, 128)
-  │
-  ▼
-Channel Concatenation: (Batch, 96, 128)
+  └──► Branch 3 (k=7): Conv1D(2->32) -> BN -> ReLU -> Conv1D(32->32) -> BN -> ReLU -> SE -> DualPool(16) ──► (Batch, 32, 32)
   │
   ▼
-Flatten: (Batch, 12288)
+Channel Concatenation: (Batch, 96, 32)
   │
   ▼
-Linear(12288 -> 128) -> ReLU -> Dropout(0.3)
+Flatten: (Batch, 3072)
+  │
+  ├── [Auxiliary RR Features: pre_RR, post_RR ratios] ──► (Batch, 2)
+  ▼
+Concatenation: (Batch, 3074)
   │
   ▼
-Linear(128 -> 5) -> Raw Logits
+Linear(3074 -> 64) -> ReLU -> Dropout(0.3)
+  │
+  ▼
+Linear(64 -> 5) -> Raw Logits
 ```
 
 ---
@@ -41,18 +45,23 @@ By executing parallel branches with varying kernel sizes, the network simultaneo
 ### Double Conv1D Hierarchy
 Each branch utilizes two sequential Conv1D layers with Batch Normalization:
 $$\text{Conv1D}(C_{\text{in}}, C_{\text{out}}, k) \to \text{BN} \to \text{ReLU} \to \text{Conv1D}(C_{\text{out}}, C_{\text{out}}, k) \to \text{BN} \to \text{ReLU}$$
-This provides non-linear hierarchical feature extraction while adding only ~10 KB of total parameters.
+This provides non-linear hierarchical feature extraction while adding minimal total parameters.
 
 ### Squeeze-and-Excitation (SE) 1D Channel Attention
 Learns per-channel calibration weights for each branch:
 $$\mathbf{s} = \sigma\left(\mathbf{W}_2 \cdot \text{ReLU}(\mathbf{W}_1 \cdot \text{AdaptiveAvgPool1D}(\mathbf{x}))\right)$$
-With a reduction ratio $r=4$, this adds only $\sim 6$ parameters per block while dynamically focusing attention on the most clinically discriminative channels.
+With a reduction ratio $r=4$, this dynamically focuses attention on the most clinically discriminative channels.
 
 ### Dual Pooling Strategy
 Standard CNNs typically employ only average pooling or only max pooling. Here, both are computed and concatenated:
-$$\mathbf{y}_{\text{pool}} = \left[ \text{AdaptiveMaxPool1D}(L), \; \text{AdaptiveAvgPool1D}(L) \right]$$
+$$\mathbf{y}_{\text{pool}} = \left[ \text{AdaptiveMaxPool1D}(16), \; \text{AdaptiveAvgPool1D}(16) \right] \in \mathbb{R}^{32 \times 32}$$
 - **Max-Pooling** retains peak voltage amplitudes (essential for R-peak and PVC magnitude detection).
 - **Avg-Pooling** preserves overall wave morphology and area-under-the-curve.
+
+### Auxiliary Timing Feature Fusion
+Clinical arrhythmias (such as Premature Ventricular Contractions and Premature Atrial Contractions) are fundamentally characterized by prematurity relative to the underlying sinus cadence:
+$$\text{pre\_RR} = \frac{R_i - R_{i-1}}{\text{median}(RR_{\text{local}})}, \quad \text{post\_RR} = \frac{R_{i+1} - R_i}{\text{median}(RR_{\text{local}})}$$
+These scalar ratios are concatenated directly into the dense classification head.
 
 ---
 
@@ -60,10 +69,10 @@ $$\mathbf{y}_{\text{pool}} = \left[ \text{AdaptiveMaxPool1D}(L), \; \text{Adapti
 
 | Layer / Component | Input Shape | Output Shape | Parameters | INT8 Size (Bytes) |
 |---|---|---|---|---|
-| Branch 1 ($k=3$) | $(1, 256)$ | $(32, 128)$ | 3,360 | 3,360 |
-| Branch 2 ($k=5$) | $(1, 256)$ | $(32, 128)$ | 5,408 | 5,408 |
-| Branch 3 ($k=7$) | $(1, 256)$ | $(32, 128)$ | 7,456 | 7,456 |
-| SE Attention Blocks (x3) | $(32, 128)$ | $(32, 128)$ | 1,536 | 1,536 |
-| Fully Connected 1 | $(12288)$ | $(128)$ | 1,572,992 | 1,572,992 (or pruned) |
-| Fully Connected 2 (Output) | $(128)$ | $(5)$ | 645 | 645 |
-| **Total Architecture** | | | **~42k trainable params (compact configuration)** | **< 45 KB total** |
+| Branch 1 ($k=3$) | $(2, 256)$ | $(32, 32)$ | 3,456 | 3,456 |
+| Branch 2 ($k=5$) | $(2, 256)$ | $(32, 32)$ | 5,504 | 5,504 |
+| Branch 3 ($k=7$) | $(2, 256)$ | $(32, 32)$ | 7,552 | 7,552 |
+| SE Attention Blocks (x3) | $(32, 32)$ | $(32, 32)$ | 1,536 | 1,536 |
+| Dense Classifier (FC1) | $(3074)$ | $(64)$ | 196,736 | 196,736 |
+| Output Layer (FC2) | $(64)$ | $(5)$ | 325 | 325 |
+| **Total Architecture** | | | **~215k params** | **< 220 KB (fits entirely in STM32H7 SRAM)** |

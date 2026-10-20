@@ -40,12 +40,19 @@ flowchart LR
    - Uses `wfdb.processing.xqrs_detect` to identify the peak of the QRS complex.
    - Enforces physiological refractory periods corresponding to minimum and maximum heart rate limits ($30 \le \text{HR} \le 300\text{ BPM}$).
 
-2. **Window Segmentation (`extract_windows`)**:
-   - Extracts a symmetric window of 256 samples centered around each valid R-peak.
+2. **Dual-Lead Window Segmentation (`extract_windows`)**:
+   - Simultaneously extracts from Channel 1 (MLII) and Channel 2 (V1), producing 2-channel tensors of shape `(2, 256)`.
    - 256 samples at 360 Hz corresponds to $\approx 711.1\text{ ms}$, ensuring complete capture of the preceding P-wave, PR interval, QRS complex, ST segment, and T-wave.
 
-3. **Label Assignment (`extract_labels`)**:
-   - Uses binary search (`np.searchsorted`) to match each window center with the nearest cardiologist annotation within a 12-sample tolerance window ($33.3\text{ ms}$).
+3. **Auxiliary RR Timing Ratios (`compute_rr_features`)**:
+   - Pre-RR ratio: $(R_i - R_{i-1}) / \text{median}(RR_{\text{local}})$.
+   - Post-RR ratio: $(R_{i+1} - R_i) / \text{median}(RR_{\text{local}})$.
+   - Clamped to $[0.2, 3.0]$ to reject extreme artifact outliers while preserving premature ectopy indicators (PACs, PVCs).
 
-4. **Multi-Hot Label Encoding**:
+4. **Patient-Adaptive Baseline Subtraction (`compute_patient_median_template`)**:
+   - Computes the patient's individual median Normal beat morphology.
+   - Subtracting idiosyncratic resting morphology suppresses anatomical inter-patient variance, boosting generalization on unseen patient test sets.
+
+5. **Label Assignment (`extract_labels`) & Multi-Hot Encoding**:
+   - Uses binary search (`np.searchsorted`) to match each window center with the nearest cardiologist annotation within a 12-sample tolerance window ($33.3\text{ ms}$).
    - Produces a target vector $\mathbf{y} \in \{0, 1\}^5$ for each beat, supporting multi-label cardiac conditions.
