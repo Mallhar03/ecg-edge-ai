@@ -97,7 +97,7 @@ bool adc_acquisition_init() {
     //    Change to AN_ADC_SAMPLETIME_810_5 if signal distortion persists.
     hw_adc_ok = adc.begin(AN_RESOLUTION_16, SAMPLE_RATE_HZ,
                           N_SAMPLES_PER_BUF, 4,
-                          true, AN_ADC_SAMPLETIME_387_5);
+                          true, AN_ADC_SAMPLETIME_810_5);
 
     if (!hw_adc_ok) {
         // AdvancedADC DMA init failed (resource conflict, pin conflict, etc.).
