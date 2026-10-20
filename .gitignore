@@ -22,3 +22,19 @@ test_venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Build artifacts & test binaries
+firmware/tests/test_golden*
+*.o
+*.a
+*.so
+
+# Datasets & Web Dashboard Assets
+*.csv
+*.html
+software/outputs/test_datasets/
+software/outputs/plots/canonical_beats.json
+software/outputs/plots/sample_records.json
+software/scripts/export_dual_lead_web_assets.py
+software/scripts/generate_clinical_html.py
+software/scripts/generate_html_interface.py
